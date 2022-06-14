@@ -1,0 +1,206 @@
+---
+title: "Tromsø Workshop - Transmission"
+author: "Gerry Tonkin-Hill"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    fig_width: 12
+    fig_height: 8
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(fig.width=20, fig.height=12,
+                      echo=TRUE, warning=FALSE, message=FALSE,
+                      tidy=TRUE)
+options(stringsAsFactors = FALSE)
+```
+
+##Load libraries
+
+```{r}
+library(caret)
+library(glmnet)
+library(gridExtra)
+library(tidyverse)
+library(ape)
+library(ggtree)
+library(ggrepel)
+```
+
+
+```
+unitig-counter -strains strain_list.txt -output unitig_counts -nb-cores 40
+```
+
+```
+python phylogeny_distance.py --lmm core_snps.final_tree.tre >  phylogeny_K.tsv
+```
+
+```
+pyseer --lmm --phenotypes resistance_data_binary.tsv --kmers unitig_counts/unitigs.txt.gz --similarity phylogeny_K.tsv --output-patterns unitig_patterns.txt --cpu 40 > penicillin_kmers.txt
+```
+
+```
+python count_patterns.py penicillin_kmers.txt
+```
+
+```
+cat <(head -1 penicillin_kmers.txt) <(awk '$4<1.45E-07 {print $0}' penicillin_kmers.txt) > significant_kmers.txt
+```
+
+```
+python summarise_annotations.py annotated_kmers.txt > gene_hits.txt
+```
+
+```{r}
+gene_hits = read_tsv("./data/gene_hits.txt")
+
+gene_hits_filt <- gene_hits[!grepl("GIFF.*", gene_hits$gene),]
+gene_hits_filt <- gene_hits_filt %>% filter(maxp>40)
+
+ggplot(gene_hits_filt, aes(x=avg_beta, y=maxp, colour=avg_maf, size=hits, label=gene)) +
+   geom_point(alpha=0.5) +
+   geom_text_repel(aes(size=60), show.legend = FALSE, colour='black') +
+   scale_size("Number of k-mers", range=c(1,10)) +
+   scale_colour_gradient('Average MAF') +
+   theme_bw(base_size=14) +
+   ggtitle("Penicillin resistance") +
+   xlab("Average effect size") +
+   ylab("Maximum -log10(p-value)")
+```
+
+
+# Prediction
+
+## Load data
+
+Lets also load some metadata on which isolates are resistant to Penicillin
+
+```{r}
+resistance_data <- read_tsv("./data/resistance_data.tsv")
+resistance_data$binary_resistance <- 1*(resistance_data$Resistance=='R')
+```
+
+```{r}
+gpscs <- read_csv("./data/GPSC_classifications.csv")
+```
+
+We can also load a phylogeny built using Gubbins.
+
+```{r}
+tree <- read.tree("./data/core_snps.final_tree.tre")
+```
+
+We can load the core SNP alignment using the ape package.
+
+```{r}
+core_aln <- read.dna("./data/core_snps.fasta", format = 'fasta', as.matrix = TRUE, as.character = TRUE)
+
+## vector method
+snps <- t(t(core_aln)==core_aln[1,])
+
+## we can convert the matrix of boolean values to binary by running
+snps <- 1-snps
+colnames(snps) <- 1:ncol(snps)
+```
+
+
+```{r}
+gpscs <- gpscs[match(resistance_data$Sample, gpscs$Sample),]
+  
+set.seed(123)
+
+test_samples <- c(
+  unique(map_chr(sample(unique(gpscs$GPSC[resistance_data$binary_resistance==1]), 20, replace = TRUE), ~{
+  sample(gpscs$Sample[(resistance_data$binary_resistance==1) & (gpscs$GPSC==.x)], 1)
+})),
+unique(map_chr(sample(unique(gpscs$GPSC[resistance_data$binary_resistance==0]), 20, replace = TRUE), ~{
+  sample(gpscs$Sample[(resistance_data$binary_resistance==0) & (gpscs$GPSC==.x)], 1)
+})))
+
+
+table(resistance_data$Resistance[resistance_data$Sample %in% test_samples])
+table(gpscs$GPSC[gpscs$Sample %in% test_samples])
+
+resistance_data <- resistance_data[match(rownames(snps), resistance_data$Sample),]
+
+test_snps <- snps[rownames(snps) %in% test_samples,]
+train_snps <- snps[!rownames(snps) %in% test_samples,]
+
+test_res <- resistance_data[resistance_data$Sample %in% test_samples,]
+train_res <- resistance_data[!resistance_data$Sample %in% test_samples,]
+```
+
+## Elastic Net Regression
+
+`glmnet`
+
+```{r}
+mnet <- cv.glmnet(train_snps, train_res$binary_resistance, family='binomial')
+p <- predict(mnet, test_snps, type='response')>0.5
+tb <- table((test_res$binary_resistance==1)==p)
+
+tb
+accuracy <- 100*tb['TRUE']/sum(tb)
+accuracy
+```
+
+## Random Forest
+
+```{r}
+pca <- prcomp(train_snps) 
+
+fitControl <- trainControl(method = "repeatedcv",
+                           number = 10,
+                           repeats = 10)
+
+
+rffit <- train(pca$x[,1:50], factor(train_res$binary_resistance),
+                 method = "rf", 
+                 trControl = fitControl,
+                 verbose = FALSE)
+
+
+new_x <- test_snps %*% pca$rotation
+
+
+p <- as.numeric(predict(rffit,new_x[,1:50]))-1
+tb <- table((test_res$binary_resistance==1)==p)
+
+tb
+accuracy <- 100*tb['TRUE']/sum(tb)
+accuracy
+```
+
+
+## Clade cross validation
+
+```{r}
+pca <- prcomp(train_snps) 
+
+group_folds = groupKFold(gpscs$GPSC[match(train_res$Sample, gpscs$Sample)])
+
+fitControl <- trainControl(method = "repeatedcv",
+                           number = 10,
+                           repeats = 10,
+                           index = group_folds, p=0.8)
+
+
+rffit <- train(pca$x[,1:50], factor(train_res$binary_resistance),
+                 method = "rf", 
+                 trControl = fitControl,
+                 verbose = FALSE)
+
+
+new_x <- test_snps %*% pca$rotation
+
+
+p <- as.numeric(predict(rffit,new_x[,1:50]))-1
+tb <- table((test_res$binary_resistance==1)==p)
+
+tb
+accuracy <- 100*tb['TRUE']/sum(tb)
+accuracy
+```
