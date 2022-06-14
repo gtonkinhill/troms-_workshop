@@ -17,12 +17,13 @@ knitr::opts_chunk$set(fig.width=20, fig.height=12,
 options(stringsAsFactors = FALSE)
 ```
 
-##Load libraries
+## Load libraries
 
 ```{r}
 library(tidyverse)
 library(ape)
 library(Rtsne)
+# devtools::install_github('gtonkinhill/fastbaps')
 library(fastbaps)
 library(ggtree)
 ```
@@ -55,37 +56,22 @@ There are a number of ways to achieve this in R. One is to make use of R's `appl
 
 ```{r}
 ## apply method
-snps <- apply(core_aln, 1, function(x) x==core_aln[1,])
 
 ## vector method
-snps <- t(t(core_aln)==core_aln[1,])
 
-## we can convert the matrix of boolean values to binary by running
-snps <- 1-snps
+## convert the matrix of boolean values to binary
 ```
 
 Using the binary matrix we can investigate a number of dimension reduction techniques. Let start with PCA using the `prcomp` function
 
 ```{r}
-pca <- prcomp(snps)
+
 ```
 
 We would then like to visualise the result. This can be done using R's `plot` function but `ggplot` tends to give nicer results. Try plotting the first and second principle components as well as the third and fourth. Colour the points by GPSC. The `match` or `merge` functions can be used to add the GPSC information to a data.frame with the principle component results.
 
 ```{r}
-pdf <- as_tibble(pca$x)
-pdf$Sample <- rownames(snps)
-pdf$GPSC <- factor(gpscs$GPSC[match(pdf$Sample, gpscs$Sample)])
 
-
-ggplot(pdf, aes(x=PC1, y=PC2, col=GPSC)) +
-  geom_point() +
-  theme_bw(base_size = 16)
-
-
-ggplot(pdf, aes(x=PC3, y=PC4, col=GPSC)) +
-  geom_point() +
-  theme_bw(base_size = 16)
 ```
 
 ## Multi-dimensional scaling
@@ -93,21 +79,13 @@ ggplot(pdf, aes(x=PC3, y=PC4, col=GPSC)) +
 Another method we did not cover in the slides is Multi-dimesnional scaling. This approach attempts to put the points in a 2D space so that the distance between the points in N dimensions is similar to the distance in 2D. MDS requires a distance matrix and can be run using the `cmdscale` function. A distance matrix can be created using the `dist` function or alternatively ape's `dsit.dna` function.
 
 ```{r}
-d <- dist(snps)
-mds <- cmdscale(d)
+
 ```
 
 Plot the result!
 
 ```{r}
-pdf <- as_tibble(mds)
-pdf$Sample <- rownames(snps)
-pdf$GPSC <- factor(gpscs$GPSC[match(pdf$Sample, gpscs$Sample)])
 
-
-ggplot(pdf, aes(x=V1, y=V2, col=GPSC)) +
-  geom_point() +
-  theme_bw(base_size = 16)
 ```
 
 ## t-SNE
@@ -115,16 +93,7 @@ ggplot(pdf, aes(x=V1, y=V2, col=GPSC)) +
 How about t-SNE using the `Rtsne` function? Try changing the perplexity value and see what it effect it has on the resulting plot. Try runnin the same function twice and comparing the results to get an idea of how much it can change.
 
 ```{r}
-tsne <- Rtsne::Rtsne(pca$x, pca=FALSE, check_duplicates=FALSE)
 
-pdf <- as_tibble(tsne$Y)
-pdf$Sample <- rownames(snps)
-pdf$GPSC <- factor(gpscs$GPSC[match(pdf$Sample, gpscs$Sample)])
-
-
-ggplot(pdf, aes(x=V1, y=V2, col=GPSC)) +
-  geom_point() +
-  theme_bw(base_size = 16)
 ```
 
 ## Mandrake
@@ -137,40 +106,25 @@ Mandrake is not currently available in R. However, it can be run easily using th
 Use [fastbaps](https://github.com/gtonkinhill/fastbaps) to cluster the genomes based on their core SNPs into two nested levels. The easiest way to this is to use the `multi_res_baps` function.
 
 ```{r}
-sparse_snps <- fastbaps::import_fasta_sparse_nt("./data/core_snps.fasta")
-fb <- fastbaps::multi_res_baps(sparse_snps, levels = 2)
+
 ```
 
 Plot the result next to the phylogeny using `ggtree` and `facet_plot` functions.
 
 ```{r}
-gg <- ggtree(tree)
 
-f2 <- facet_plot(gg, panel = "fastbaps", data = fb, geom = geom_tile, aes(x = `Level 1`), 
-    color = "blue")
-f2
 ```
 
 Try changing the prior using the `optimise_prior` function and look what impact it has.
 
 ```{r}
-sparse_snps <- optimise_prior(sparse_snps, type = 'symmetric')
-fb <- fastbaps::multi_res_baps(sparse_snps, levels = 2)
 
-f3 <- facet_plot(f2, panel = "symmetric prior", data = fb, geom = geom_tile, aes(x = `Level 1`), 
-    color = "red")
-f3
 ```
 
 We can also compare this to some general clustering functions. Lets try kmeans and let the algorithm know we want 3 or 4 clusters. Kmeans is initialised randomly so its worth running it a few times to see how it changes the result.
 
 ```{r}
-km <- kmeans(snps, centers = 4)
-fb$kmeans <- km$cluster[match(fb$Isolates,names(km$cluster))]
 
-f4 <- facet_plot(f3, panel = "kmeans", data = fb, geom = geom_tile, aes(x = kmeans), 
-    color = "green")
-f4
 ```
 
 ## For those who have seen it all before

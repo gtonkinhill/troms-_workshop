@@ -1,0 +1,209 @@
+---
+title: "Tromsø Workshop - Population Structure & Clustering"
+author: "Gerry Tonkin-Hill"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    fig_width: 12
+    fig_height: 8
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(fig.width=20, fig.height=12,
+                      echo=FALSE, warning=FALSE, message=FALSE,
+                      tidy=TRUE)
+options(stringsAsFactors = FALSE)
+```
+
+## Load libraries
+
+---
+
+```{r}
+library(tidyverse)
+library(ape)
+library(Rtsne)
+# devtools::install_github('gtonkinhill/fastbaps')
+library(fastbaps)
+library(ggtree)
+```
+
+## Load the data
+
+We can load the core SNP alignment using the ape package.
+
+---
+
+```{r}
+core_aln <- read.dna("./data/core_snps.fasta", format = 'fasta', as.matrix = TRUE, as.character = TRUE)
+```
+
+I have also included a csv file with the Global Pneumococcal Sequencing Cluster (GPSC) classifications to help with visualisation. This can be loaded using the following command.
+
+---
+
+```{r}
+gpscs <- read_csv("./data/GPSC_classifications.csv")
+```
+
+We can also load a phylogeny built using Gubbins.
+
+---
+
+```{r}
+tree <- read.tree("./data/core_snps.final_tree.tre")
+```
+
+## PCA
+
+We first need to convert this to a binary matrix. One of the easiest ways to do this is to use the first sequencing in the alignment as a reference.
+
+There are a number of ways to achieve this in R. One is to make use of R's `apply` function. A faster (but more complicated way) is to take advantage of the speed of vector comparisons in R.
+
+---
+
+```{r}
+## apply method
+snps <- apply(core_aln, 1, function(x) x==core_aln[1,])
+
+## vector method
+snps <- t(t(core_aln)==core_aln[1,])
+
+## we can convert the matrix of boolean values to binary by running
+snps <- 1-snps
+```
+
+Using the binary matrix we can investigate a number of dimension reduction techniques. Let start with PCA using the `prcomp` function
+
+---
+
+```{r}
+pca <- prcomp(snps)
+```
+
+We would then like to visualise the result. This can be done using R's `plot` function but `ggplot` tends to give nicer results. Try plotting the first and second principle components as well as the third and fourth. Colour the points by GPSC. The `match` or `merge` functions can be used to add the GPSC information to a data.frame with the principle component results.
+
+---
+
+```{r}
+pdf <- as_tibble(pca$x)
+pdf$Sample <- rownames(snps)
+pdf$GPSC <- factor(gpscs$GPSC[match(pdf$Sample, gpscs$Sample)])
+
+
+ggplot(pdf, aes(x=PC1, y=PC2, col=GPSC)) +
+  geom_point() +
+  theme_bw(base_size = 16)
+
+
+ggplot(pdf, aes(x=PC3, y=PC4, col=GPSC)) +
+  geom_point() +
+  theme_bw(base_size = 16)
+```
+
+## Multi-dimensional scaling
+
+Another method we did not cover in the slides is Multi-dimesnional scaling. This approach attempts to put the points in a 2D space so that the distance between the points in N dimensions is similar to the distance in 2D. MDS requires a distance matrix and can be run using the `cmdscale` function. A distance matrix can be created using the `dist` function or alternatively ape's `dsit.dna` function.
+
+---
+
+```{r}
+d <- dist(snps)
+mds <- cmdscale(d)
+```
+
+Plot the result!
+
+---
+
+```{r}
+pdf <- as_tibble(mds)
+pdf$Sample <- rownames(snps)
+pdf$GPSC <- factor(gpscs$GPSC[match(pdf$Sample, gpscs$Sample)])
+
+
+ggplot(pdf, aes(x=V1, y=V2, col=GPSC)) +
+  geom_point() +
+  theme_bw(base_size = 16)
+```
+
+## t-SNE
+
+How about t-SNE using the `Rtsne` function? Try changing the perplexity value and see what it effect it has on the resulting plot. Try runnin the same function twice and comparing the results to get an idea of how much it can change.
+
+---
+
+```{r}
+tsne <- Rtsne::Rtsne(pca$x, pca=FALSE, check_duplicates=FALSE)
+
+pdf <- as_tibble(tsne$Y)
+pdf$Sample <- rownames(snps)
+pdf$GPSC <- factor(gpscs$GPSC[match(pdf$Sample, gpscs$Sample)])
+
+
+ggplot(pdf, aes(x=V1, y=V2, col=GPSC)) +
+  geom_point() +
+  theme_bw(base_size = 16)
+```
+
+## Mandrake
+
+Mandrake is not currently available in R. However, it can be run easily using the web based version at https://gtonkinhill.github.io/mandrake-web . You will just need to add the fasta file to the input command.
+
+
+# Clustering
+
+Use [fastbaps](https://github.com/gtonkinhill/fastbaps) to cluster the genomes based on their core SNPs into two nested levels. The easiest way to this is to use the `multi_res_baps` function.
+
+---
+
+```{r}
+sparse_snps <- fastbaps::import_fasta_sparse_nt("./data/core_snps.fasta")
+fb <- fastbaps::multi_res_baps(sparse_snps, levels = 2)
+```
+
+Plot the result next to the phylogeny using `ggtree` and `facet_plot` functions.
+
+---
+
+```{r}
+gg <- ggtree(tree)
+
+f2 <- facet_plot(gg, panel = "fastbaps", data = fb, geom = geom_tile, aes(x = `Level 1`), 
+    color = "blue")
+f2
+```
+
+Try changing the prior using the `optimise_prior` function and look what impact it has.
+
+---
+
+```{r}
+sparse_snps <- optimise_prior(sparse_snps, type = 'symmetric')
+fb <- fastbaps::multi_res_baps(sparse_snps, levels = 2)
+
+f3 <- facet_plot(f2, panel = "symmetric prior", data = fb, geom = geom_tile, aes(x = `Level 1`), 
+    color = "red")
+f3
+```
+
+We can also compare this to some general clustering functions. Lets try kmeans and let the algorithm know we want 3 or 4 clusters. Kmeans is initialised randomly so its worth running it a few times to see how it changes the result.
+
+---
+
+```{r}
+km <- kmeans(snps, centers = 4)
+fb$kmeans <- km$cluster[match(fb$Isolates,names(km$cluster))]
+
+f4 <- facet_plot(f3, panel = "kmeans", data = fb, geom = geom_tile, aes(x = kmeans), 
+    color = "green")
+f4
+```
+
+## For those who have seen it all before
+
+An exciting area of method development focuses on the 'tree sequence' data structure. As far as I know there has not been a lot of work done on using these methods with bacterial genomes but I think it would be a valuable thing to try. 
+
+An initial tutorial on how to set it up can be found here https://tsinfer.readthedocs.io/en/latest/tutorial.html
