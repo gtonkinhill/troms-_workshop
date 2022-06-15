@@ -29,36 +29,59 @@ library(ggtree)
 library(ggrepel)
 ```
 
+Although it is tricky to run a full GWAS using pyseer in the workshop, I have copied the basic commands needed below in case it is helpful later on.
+
+First run `unitig-counter`. Alternativly you can run `unitig-caller` which has also been written by John Lees.
 
 ```
 unitig-counter -strains strain_list.txt -output unitig_counts -nb-cores 40
 ```
 
+We now need to estimate a kinship matrix to account for population structure in the GWAS. Here, I am using the core snp phylogeny as input.
+
 ```
 python phylogeny_distance.py --lmm core_snps.final_tree.tre >  phylogeny_K.tsv
 ```
+
+We can now run Pyseer! I am using a tab separated file with the Samples in the first column and resistance coded as 0/1 in the following column as the phenotype input.
 
 ```
 pyseer --lmm --phenotypes resistance_data_binary.tsv --kmers unitig_counts/unitigs.txt.gz --similarity phylogeny_K.tsv --output-patterns unitig_patterns.txt --cpu 40 > penicillin_kmers.txt
 ```
 
+To account for the fact that we have done multiple tests we can count the number of unique unitig patterns. This value can then be used to perform multiple testing correction by dividing our p-value threshold by the number of unique patterns. i.e if we used a threshold of 0.05 the corrected threshold would be 0.05/(number of patterns)
+
 ```
 python count_patterns.py penicillin_kmers.txt
 ```
+
+We can then filter the kmers to only those below this threshold. In this example I am using 1.45r-7 but you will need to adjust this to your analysis.
 
 ```
 cat <(head -1 penicillin_kmers.txt) <(awk '$4<1.45E-07 {print $0}' penicillin_kmers.txt) > significant_kmers.txt
 ```
 
+We can annotate the hits by aligning them to annotated reference genomes
+
+```
+annotate_hits_pyseer significant_kmers.txt references.txt annotated_kmers.txt
+```
+
+We can then summarise the hits by gene, ready for plotting.
+
 ```
 python summarise_annotations.py annotated_kmers.txt > gene_hits.txt
 ```
 
+Finally, we can make a plot of the most interesting kmers! I have added some additional filters here that you may want to modify or remove
+
 ```{r}
 gene_hits = read_tsv("./data/gene_hits.txt")
 
+### Additional filters! ####
 gene_hits_filt <- gene_hits[!grepl("GIFF.*", gene_hits$gene),]
 gene_hits_filt <- gene_hits_filt %>% filter(maxp>40)
+############################
 
 ggplot(gene_hits_filt, aes(x=avg_beta, y=maxp, colour=avg_maf, size=hits, label=gene)) +
    geom_point(alpha=0.5) +
@@ -74,6 +97,8 @@ ggplot(gene_hits_filt, aes(x=avg_beta, y=maxp, colour=avg_maf, size=hits, label=
 
 # Prediction
 
+We now move on to prediction rather than association. As examples we use two common approaches including regularised regression and random forests. We will try and predict resistance to penicillin from the core genome alignment.
+
 ## Load data
 
 Lets also load some metadata on which isolates are resistant to Penicillin
@@ -82,6 +107,8 @@ Lets also load some metadata on which isolates are resistant to Penicillin
 resistance_data <- read_tsv("./data/resistance_data.tsv")
 resistance_data$binary_resistance <- 1*(resistance_data$Resistance=='R')
 ```
+
+Load the GPSCs as well to help control for population structure.
 
 ```{r}
 gpscs <- read_csv("./data/GPSC_classifications.csv")
@@ -106,6 +133,7 @@ snps <- 1-snps
 colnames(snps) <- 1:ncol(snps)
 ```
 
+This overly complicated looking code splits our data into a test set and a training set. We ensure that our chance of choosing a GPSC in the test set is not influenced by the number of samples we have for each GPSC.
 
 ```{r}
 gpscs <- gpscs[match(resistance_data$Sample, gpscs$Sample),]
@@ -135,11 +163,22 @@ train_res <- resistance_data[!resistance_data$Sample %in% test_samples,]
 
 ## Elastic Net Regression
 
-`glmnet`
+Elastic net regression is a good starting point and has been shown to work well for this problem. We use the `glmnet` function to do this and fit the paramters using cross validation.
 
 ```{r}
 mnet <- cv.glmnet(train_snps, train_res$binary_resistance, family='binomial')
+
+```
+
+As the name suggests the predict function allows to predict what the phenotype will be using new genomes. Here we assume a predicted probability of resistance of over 0.5 is predictive of resistance.
+
+```{r}
 p <- predict(mnet, test_snps, type='response')>0.5
+```
+
+Now we have our predicitions we can compare them to the actual result in our test data.
+
+```{r}
 tb <- table((test_res$binary_resistance==1)==p)
 
 tb
@@ -149,24 +188,47 @@ accuracy
 
 ## Random Forest
 
+Random forest is another machine learning method for prediction. Here, we will use the `caret` package to perform the prediction. This package includes many other approaches and can be a nice way to compare methods.
+
+To reduce the number of dimensions used for prediction we first do a PCA analysis
+
 ```{r}
 pca <- prcomp(train_snps) 
+```
 
+We set up the method to do 10 fold cross validation to fit the parameters of the model
+
+```{r}
 fitControl <- trainControl(method = "repeatedcv",
                            number = 10,
                            repeats = 10)
+```
 
+We can now train the model. As a first try we will use the first 50 principle components as input.
 
+```{r}
 rffit <- train(pca$x[,1:50], factor(train_res$binary_resistance),
                  method = "rf", 
                  trControl = fitControl,
                  verbose = FALSE)
+```
 
+Now we can predict resistance in the test set. We first need to convert the genome type data into the same dimensions as the original PCA analysis
+
+```{r}
 
 new_x <- test_snps %*% pca$rotation
+```
 
+Finally we can do some predicition!
 
+```{r}
 p <- as.numeric(predict(rffit,new_x[,1:50]))-1
+```
+
+We can now compare our predicitons to the real result.
+
+```{r}
 tb <- table((test_res$binary_resistance==1)==p)
 
 tb
@@ -176,6 +238,8 @@ accuracy
 
 
 ## Clade cross validation
+
+We can now try to train using a different kind of cross validation by leaving one clade (GPSC) out at a time.  
 
 ```{r}
 pca <- prcomp(train_snps) 

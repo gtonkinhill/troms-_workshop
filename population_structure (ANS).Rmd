@@ -94,7 +94,7 @@ pdf$GPSC <- factor(gpscs$GPSC[match(pdf$Sample, gpscs$Sample)])
 
 
 ggplot(pdf, aes(x=PC1, y=PC2, col=GPSC)) +
-  geom_point() +
+  geom_point(size=10) +
   theme_bw(base_size = 16)
 
 
@@ -144,7 +144,7 @@ pdf$GPSC <- factor(gpscs$GPSC[match(pdf$Sample, gpscs$Sample)])
 
 
 ggplot(pdf, aes(x=V1, y=V2, col=GPSC)) +
-  geom_point() +
+  geom_point(size=10) +
   theme_bw(base_size = 16)
 ```
 
